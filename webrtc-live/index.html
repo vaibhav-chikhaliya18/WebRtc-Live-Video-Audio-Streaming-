@@ -1,0 +1,199 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Live Video+Audio — WebRTC demo</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Roboto, Arial; padding: 12px; }
+    video { width: 320px; height: 240px; background: #000; margin: 6px; }
+    #controls { margin-bottom: 12px; }
+    #remotes video { display: inline-block; vertical-align: top; }
+  </style>
+</head>
+<body>
+  <h2>Live Video & Audio (WebRTC) — Mesh demo</h2>
+
+  <div id="controls">
+    Room: <input id="roomInput" value="demo" />
+    <button id="btnStart">Start Camera</button>
+    <button id="btnJoin">Join Room</button>
+    <button id="btnLeave">Leave</button>
+  </div>
+
+  <div>
+    <strong>Local</strong><br/>
+    <video id="localVideo" autoplay playsinline muted></video>
+  </div>
+
+  <div>
+    <strong>Remotes</strong><br/>
+    <div id="remotes"></div>
+  </div>
+
+<script>
+/* ======= Simple browser WebRTC client ======= */
+
+const localVideo = document.getElementById('localVideo');
+const remotes = document.getElementById('remotes');
+const roomInput = document.getElementById('roomInput');
+const btnStart = document.getElementById('btnStart');
+const btnJoin = document.getElementById('btnJoin');
+const btnLeave = document.getElementById('btnLeave');
+
+let localStream = null;
+let ws = null;
+const peerConnections = {}; // remoteId -> RTCPeerConnection
+const localId = Math.random().toString(36).substr(2, 9);
+const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+
+btnStart.onclick = async () => {
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    localVideo.srcObject = localStream;
+    btnStart.disabled = true;
+  } catch (err) {
+    alert('Error accessing camera/microphone: ' + err.message);
+    console.error(err);
+  }
+};
+
+btnJoin.onclick = async () => {
+  const room = (roomInput.value || 'default').trim();
+  if (!room) return alert('Enter a room name.');
+
+  if (!localStream) {
+    await btnStart.onclick(); // start camera automatically if not started
+  }
+  connectToSignaling(room);
+};
+
+btnLeave.onclick = () => {
+  if (ws) { ws.close(); ws = null; }
+  for (const id in peerConnections) {
+    peerConnections[id].close();
+    delete peerConnections[id];
+    const v = document.getElementById('remote_' + id);
+    if (v) v.remove();
+  }
+  if (localStream) {
+    localStream.getTracks().forEach(t => t.stop());
+    localStream = null;
+    localVideo.srcObject = null;
+  }
+  btnStart.disabled = false;
+};
+
+function connectToSignaling(room) {
+  if (ws) ws.close();
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws?room=${encodeURIComponent(room)}`);
+
+  ws.onopen = () => {
+    console.log('WS open — sending join.', localId);
+    ws.send(JSON.stringify({ type: 'join', from: localId }));
+  };
+
+  ws.onmessage = async (evt) => {
+    try {
+      const data = JSON.parse(evt.data);
+      const { type, from, to } = data;
+      // If message has a "to" and it's not meant for us -> ignore
+      if (to && to !== localId) return;
+      if (from === localId) return;
+
+      if (type === 'join') {
+        // Someone joined the room -> decide whether we should initiate an offer
+        // Deterministic rule: the peer with lexicographically smaller id initiates the offer
+        if (localId < from) {
+          await createPeerConnection(from, true);
+        }
+      } else if (type === 'offer') {
+        // remote offered -> create peer connection (if needed), set remote desc, answer
+        await createPeerConnection(from, false);
+        const pc = peerConnections[from];
+        await pc.setRemoteDescription(data.sdp);
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        ws.send(JSON.stringify({ type: 'answer', from: localId, to: from, sdp: pc.localDescription }));
+      } else if (type === 'answer') {
+        const pc = peerConnections[from];
+        if (pc) {
+          await pc.setRemoteDescription(data.sdp);
+        } else {
+          console.warn('Answer received for unknown pc from', from);
+        }
+      } else if (type === 'ice') {
+        const pc = peerConnections[from];
+        if (pc && data.candidate) {
+          try {
+            await pc.addIceCandidate(data.candidate);
+          } catch (e) {
+            console.warn('addIceCandidate failed', e);
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Error handling ws message', e);
+    }
+  };
+
+  ws.onclose = () => console.log('WS closed');
+  ws.onerror = (e) => console.error('WS error', e);
+}
+
+async function createPeerConnection(remoteId, isInitiator) {
+  if (peerConnections[remoteId]) return peerConnections[remoteId];
+
+  const pc = new RTCPeerConnection(config);
+  peerConnections[remoteId] = pc;
+
+  // Send any ICE candidates we generate to the remote peer via signaling
+  pc.onicecandidate = (ev) => {
+    if (ev.candidate && ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'ice', from: localId, to: remoteId, candidate: ev.candidate }));
+    }
+  };
+
+  // When remote track(s) arrive, attach to a <video>
+  pc._remoteStream = null;
+  pc.ontrack = (ev) => {
+    // ev.streams[0] is the preferred stream when available
+    let stream = (ev.streams && ev.streams[0]) || null;
+    if (!stream) {
+      // fallback: build a stream from track(s)
+      if (!pc._remoteStream) pc._remoteStream = new MediaStream();
+      pc._remoteStream.addTrack(ev.track);
+      stream = pc._remoteStream;
+    }
+    let v = document.getElementById('remote_' + remoteId);
+    if (!v) {
+      v = document.createElement('video');
+      v.id = 'remote_' + remoteId;
+      v.autoplay = true;
+      v.playsInline = true;
+      remotes.appendChild(v);
+    }
+    v.srcObject = stream;
+  };
+
+  // Add our local tracks (camera+mic) to the peer connection
+  if (localStream) {
+    for (const track of localStream.getTracks()) {
+      pc.addTrack(track, localStream);
+    }
+  }
+
+  // If we should start the offer (initiator), create and send it
+  if (isInitiator) {
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'offer', from: localId, to: remoteId, sdp: pc.localDescription }));
+    }
+  }
+
+  return pc;
+}
+</script>
+</body>
+</html>
