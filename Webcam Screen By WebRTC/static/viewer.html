@@ -1,0 +1,102 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Viewer</title>
+<style>
+  body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: linear-gradient(135deg, #1e3c72, #2a5298);
+    color: #fff;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    margin: 0;
+  }
+  h2 {
+    font-size: 2rem;
+    margin-bottom: 20px;
+  }
+  .row {
+    margin: 16px 0;
+    display: flex;
+    gap: 12px;
+  }
+  button {
+    background: #ffffff10;
+    border: 1px solid #ffffff40;
+    padding: 10px 20px;
+    border-radius: 12px;
+    font-size: 16px;
+    color: #fff;
+    cursor: pointer;
+    transition: 0.3s ease;
+    backdrop-filter: blur(4px);
+  }
+  button:hover {
+    background: #ffffff30;
+    transform: translateY(-2px);
+  }
+  video {
+    max-width: 90vw;
+    max-height: 70vh;
+    border-radius: 20px;
+    box-shadow: 0 8px 25px rgba(0,0,0,0.4);
+  }
+</style>
+<body>
+  <h2>🎥 Video Viewer</h2>
+  <div class="row">
+    <button id="join1080">Play 1080p</button>
+    <button id="join720">Play 720p</button>
+    <button id="join480">Play 480p</button>
+  </div>
+
+  <!-- Local video as fallback source -->
+  <video id="remote" autoplay playsinline controls>
+    <source id="fallbackVideo" src="file:///E:/Engagement%20Photos%20&%20Videos/Highlight.mp4" type="video/mp4">
+    Your browser does not support HTML video.
+  </video>
+
+  <script>
+    function setFallbackResolution(res) {
+      const video = document.getElementById('remote');
+      video.width = res === "1080" ? 1920 : res === "720" ? 1280 : 854;
+      video.height = res === "1080" ? 1080 : res === "720" ? 720 : 480;
+    }
+
+    async function joinAtResolution(res) {
+      const pc = new RTCPeerConnection({
+        iceServers: [{urls: 'stun:stun.l.google.com:19302'}]
+      });
+
+      pc.ontrack = (e) => {
+        document.getElementById('remote').srcObject = e.streams[0];
+      };
+
+      pc.addTransceiver('video', { direction: 'recvonly' });
+      pc.addTransceiver('audio', { direction: 'recvonly' });
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      const r = await fetch('/offer/viewer?res=' + res, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(pc.localDescription)
+      });
+
+      if (!r.ok) {
+        setFallbackResolution(res);
+        return;
+      }
+
+      const answer = await r.json();
+      await pc.setRemoteDescription(answer);
+    }
+
+    document.getElementById('join1080').onclick = () => joinAtResolution("1080");
+    document.getElementById('join720').onclick = () => joinAtResolution("720");
+    document.getElementById('join480').onclick = () => joinAtResolution("480");
+  </script>
+</body>

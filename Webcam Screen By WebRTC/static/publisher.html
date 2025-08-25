@@ -1,0 +1,98 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Publisher</title>
+<style>
+  body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: linear-gradient(135deg, #1e3c72, #2a5298);
+    color: #fff;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    margin: 0;
+  }
+  h2 {
+    font-size: 2rem;
+    margin-bottom: 20px;
+  }
+  .row {
+    margin: 16px 0;
+    display: flex;
+    gap: 12px;
+  }
+  button {
+    background: #ffffff10;
+    border: 1px solid #ffffff40;
+    padding: 10px 20px;
+    border-radius: 12px;
+    font-size: 16px;
+    color: #fff;
+    cursor: pointer;
+    transition: 0.3s ease;
+    backdrop-filter: blur(4px);
+  }
+  button:hover {
+    background: #ffffff30;
+    transform: translateY(-2px);
+  }
+  video {
+    max-width: 90vw;
+    max-height: 70vh;
+    border-radius: 20px;
+    margin-top: 20px;
+    box-shadow: 0 8px 25px rgba(0,0,0,0.4);
+  }
+</style>
+<body>
+  <h2>🎥 Publisher</h2>
+  <div class="row">
+    <button id="cam">Start Camera (1080p)</button>
+    <button id="screen">Share Screen</button>
+  </div>
+  <video id="v" autoplay playsinline muted></video>
+
+  <script>
+    const v = document.getElementById('v');
+
+    async function start(kind) {
+      let stream;
+      if (kind === 'screen') {
+        stream = await navigator.mediaDevices.getDisplayMedia({video: true, audio: true});
+      } else {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: {ideal: 1920},
+            height: {ideal: 1080},
+            frameRate: {ideal: 30, max: 30}
+          },
+          audio: true
+        });
+      }
+      v.srcObject = stream;
+
+      const pc = new RTCPeerConnection({
+        iceServers: [{urls: 'stun:stun.l.google.com:19302'}]
+      });
+
+      // Send tracks to server
+      stream.getTracks().forEach(t => pc.addTrack(t, stream));
+
+      pc.onicecandidate = () => {};
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      const r = await fetch('/offer/publisher', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(pc.localDescription)
+      });
+      const answer = await r.json();
+      await pc.setRemoteDescription(answer);
+    }
+
+    document.getElementById('cam').onclick = () => start('cam');
+    document.getElementById('screen').onclick = () => start('screen');
+  </script>
+</body>
